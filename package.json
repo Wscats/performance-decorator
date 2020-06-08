@@ -12,6 +12,6 @@
   },
   "scripts": {
     "compile": "ts-node index.ts",
-    "test": "ts-node test.ts"
+    "test": "ts-node decorator/index.ts"
   }
 }
