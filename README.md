@@ -301,7 +301,7 @@ class RequestApi {
 
 ## 配合 AST 把装饰范围延伸到全局
 
-有时候类装饰器可能覆盖的范围还不够，我们可能想分析出全局所有的类方法的执行效率，那么我们可以考虑和 AST (Abstract Syntax Tree)抽象语法树合作一次，因为手动书写去注入装饰器，在几个文件里面还可以接受，但是往往我要整个模块去注入装饰器，此时手动注入就变得不靠谱，那么我们可以在 webpack 编译的时候通过 loader 这个阶段去分析源代码每一个有类的地方，然后自动帮我们在每一个类里面增加装饰器，AST 主要就是帮我们分析出特定的语法单元，比如类就是这个特定的语法单元，通过 AST 解析器我们会转化成一个抽象语法树：
+有时候类装饰器可能覆盖的范围还不够，我们可能想分析出全局所有的类方法的执行效率，那么我们可以考虑和 AST (Abstract Syntax Tree)抽象语法树合作一次，因为手动书写去注入装饰器，在几个文件里面还可以接受，但是往往我要整个模块去注入装饰器，此时手动注入就变得不靠谱，那么我们可以在 webpack 编译的时候通过 loader 这个阶段去分析源代码每一个有类的地方，然后自动帮我们在每一个类里面增加装饰器，AST 主要就是帮我们分析出特定的语法单元，比如类就是这个特定的语法单元，通过确定词法关系，确定对应的表达含义，通过 AST 解析器我们会转化成一个抽象语法树：
 
 ```js
 class RequestApi {
@@ -316,6 +316,7 @@ class RequestApi {
 {
   "type": "File",
     'program': {
+      "type": "Program",
     "body": [
       {
         "type": "ClassDeclaration",
@@ -336,3 +337,26 @@ class RequestApi {
   }
 }
 ```
+
+我们可以通过 babel 库来使用 AST，事实上 babel 里面的语法糖转化很多都是基于 AST 来实现的，比如箭头函数转化普通函数，let 和 const 等，具体我们需要借助两个库实现 AST 树，分别是 `@babel/core` 和 `babel-types`。
+
+- @babel/core 核心库，用来实现核心转换引擎
+- babel-types 类型判断，用于生成 AST 片段
+
+```js
+// babel 先将 JavaScript 代码转换成 AST 树，然后进行遍历，最后输出 code
+
+let result = babel.transform(code, {
+  plugins: [
+    {
+      visitor: {
+        "ClassExpression|VariableDeclaration"(path) {
+          console.log(path.node.body);
+        },
+      },
+    },
+  ],
+});
+```
+
+这里我们需要用到 babel 中的 transform 方法，它可以将 JavaScript 代码转换成 AST ，过程中可以通过使用各种 plugins 对 AST 进行改造，最终生成新的 AST 和 JavaScript 代码，这里的 visitor 是最核心，也是最复杂的一部分，它是一种`访问者模式`，匹配不同的词法，并对 AST 树进行修改。
