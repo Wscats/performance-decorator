@@ -4,6 +4,8 @@
   "main": "index.js",
   "license": "MIT",
   "dependencies": {
+    "@babel/core": "^7.10.2",
+    "babel-types": "^6.26.0",
     "reflect-metadata": "^0.1.13"
   },
   "devDependencies": {

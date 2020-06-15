@@ -1,0 +1,16 @@
+{
+  "name": "ast-demo",
+  "version": "1.0.0",
+  "description": "",
+  "main": "ast.js",
+  "dependencies": {},
+  "devDependencies": {
+    "@babel/core": "^7.10.2",
+    "babel-types": "^6.26.0"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC"
+}

@@ -345,18 +345,49 @@ class RequestApi {
 
 ```js
 // babel 先将 JavaScript 代码转换成 AST 树，然后进行遍历，最后输出 code
+const {
+    transform
+} = require("@babel/core");
+const t = require("babel-types");
+const allScript = `
+  class RequestApi {
+      constructor() {
+      }
+      undo() {
+      }
+      redo() {
+      }
+      applyCollab() {
+      }
+      applyOffline() {
+      }
+  }
+`
 
-let result = babel.transform(code, {
-  plugins: [
-    {
-      visitor: {
-        "ClassExpression|VariableDeclaration"(path) {
-          console.log(path.node.body);
-        },
-      },
-    },
-  ],
+transform(allScript, {
+    plugins: [
+        {
+            visitor: {
+                "ClassDeclaration"(path) {
+                    path.insertBefore([t.identifier('@logPerformance')])
+                }
+            },
+        }
+    ]
+}, (err, result) => {
+    if (err) {
+        console.log(err)
+    } else {
+        console.log(result.code)
+    }
 });
 ```
 
-这里我们需要用到 babel 中的 transform 方法，它可以将 JavaScript 代码转换成 AST ，过程中可以通过使用各种 plugins 对 AST 进行改造，最终生成新的 AST 和 JavaScript 代码，这里的 visitor 是最核心，也是最复杂的一部分，它是一种`访问者模式`，匹配不同的词法，并对 AST 树进行修改。
+babel 的工作过程经过三个阶段，parse、transform 和 generate，具体来说，如下图所示，在 parse 阶段，使用 @babel/core 库的将源代码转换为 AST，在 transform 阶段，利用各种插件进行代码转换，比如我们常用到的 React 的 JSX 语法转化，在 generator 阶段，再利用代码生成工具，将 AST 转换成代码，业务代码里面其实用到 AST 的场景并不是很多，这里考虑 AST 更多是因为我们的装饰器本质上不影响业务代码，所以我们不需要去关心处理原业务层上的代码，而关心如何匹配相似的规则把对应的装饰器精准的投放到对应的类里面。
+
+<img src="src/imgs/1.png">
+
+根据上面的方案，这里我们需要用到 babel 中的 transform 方法，它可以将 JavaScript 代码转换成 AST ，过程中可以通过使用各种 plugins 对 AST 进行改造，最终生成新的 AST 和 JavaScript 代码，这里的 visitor 就是实现 plugins 最核心，也是最复杂的一部分，它是基于一种`访问者模式`，根据规则匹配不同的词法，并对 AST 树进行修改，通过修改这颗树，精准的定位到声明语句、赋值语句、运算语句等等，可以实现对原代码的分析、优化、变更等操作，最终重塑出一份新的代码，代码里面可以看到我们用 ClassDeclaration 匹配出代码中所有 `class xxx {}` 的词法，然后使用 `path.insertBefore([t.identifier('@logPerformance')])` 往 class 的头部增加了一段 @logPerformance 的代码，这个 t.identifier() 方法就是 babel-types 库提供给我们的工具，帮助我们在 transform 的时候组装对应的 AST 节点，我们可以使用它来对 AST 树进行增删改查。
+
+## 修改 webpack 配置让装饰器成功上车
+
