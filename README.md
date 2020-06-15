@@ -1,6 +1,10 @@
-# 装饰器对类方法性能的监听
+# 装饰器和AST实现函数调用链追踪
+
+## 装饰器对类方法性能的监听
 
 在很多时候我们项目越来越大的时候，我们希望去监听局部某些类方法的性能，这个时候我们既不想影响源代码的功能，但又想借助某些方案去窥探类方法内部的运行效能，此时我们就可以考虑使用装饰器对类方法性能进行监听。装饰器相信大家都不陌生了，虽然在 Javasript 里面它仍处于提议阶段，但是我们已经可以 TypeScript 里面运用这个特性，也可以借助 babel 的语法转换在 Javasript 里面使用。
+
+<img src="./src/imgs/2.png" />
 
 ## 那先简单讲讲什么是装饰器吧
 
@@ -258,6 +262,8 @@ Object.keys(propertyNames).forEach((key) => {
 
 有了上面的这个思路我们就只需要把它稍微封装一下，就可以封装出这个通用的装饰器，有了这个装饰器我们还可以继续丰富这个装饰器的接口，我们可以使用一个闭包来封装这个装饰器，让装饰器可以带参数来丰富更多的功能，我们可以在上面增加接口开关，控制装饰器的特定功能，比如下面我们可以使用 isTraceDecoratorOpen, isInParamsOpen, isOutParamsOpen 等来分别控制该装饰器是否要记录入参，是否要记录出参，是否使用装饰后的函数还是原函数，后续我们还可以使用 `Relfect Metadata` ，它强大的反射接口允许我们在运行时检查未知类并找出有关它的所有内容。我们可以使用它找到以下信息，比如：类的名称，类型，构造函数参数的名称和类型等，这里就不单独阐述这方面的知识了，有兴趣的同学可以查看 `Relfect Metadata` 库的相关文档和信息，甚者我们可以使用一个堆栈去维护装饰器返回的结果，这个堆栈可以提供一个 start 和 end 的方法分别放在函数执行前和执行后，一个完整的堆栈可以分析出局部某一部分的类的执行效率，并通过入参来推导和模拟出一次完整的类方法被调用的过程，从而复现问题和提升类方法的性能。
 
+<img src="src/imgs/3.png" />
+
 ```ts
 + interface Options {
 +     // 是否开启监听
@@ -296,6 +302,22 @@ class RequestApi {
   applyCollab() {}
   applyOffline() {}
   // ...
+}
+```
+
+在项目中，不管你考虑多少种情况，有时我们的代码总还是会出现错误。可能是因为我们的编写的逻辑出错，语法出错，与预期不同的用户输入，或是错误的服务端响应以及其他数千种原因。也有可能有其他疏漏的地方，正常情况下碰到错误，代码可能就自动停下来运行，并在控制台将错误打印出来，此时可以使用 `try catch` 语句标记要装饰的语句块，并指定一个出现异常时抛出，这是一种更合理的操作，而不是让代码因为错误而停止，这在代码量非常庞大的时候给你一种兜底的方案去监听指定的函数是否有错误异常抛出。
+
+```js
+try {
+  const timeStart = performance && performance.now();
+  // 调用原函数逻辑
+  return descriptor && descriptor.value.apply(this, inParams);
+} catch (err) {
+  // 上报错误到服务器
+  console.log(err);
+} finally {
+  const timeEnd = performance && performance.now();
+  const timeConsuming = timeEnd - timeStart;
 }
 ```
 
@@ -391,3 +413,26 @@ babel 的工作过程经过三个阶段，parse、transform 和 generate，具�
 
 ## 修改 webpack 配置让装饰器成功上车
 
+经过我们上边一轮对 AST 操作之后，我们就要去解决，如何把处理后的代码放入业务代码里面运行，因为在 AST 修改其实本质上是不会变动源代码文件的内容，只是源代码在经过 babel 编译处理的时候，夹带装饰器进去而已，那么我们最简单的方法就是更改我们业务中的 webpack 配置。
+
+- 以处理 Typescript 文件为例：
+  - Typescript 源代码会先交给 ts-loader 把 ts 转换成 JavaScript
+  - 把 ts-loader 输出的 JavaScript 交给 babel-loader 处理，输出最终浏览器可执行的 JavaScript
+
+可以看出以上的每一步处理过程需要有顺序的链式执行，先 ts-loader 再 babel-loader，一份源代码可能需要经历多个 loader 转换才能正常使用，前一个 loader 会把处理好的代码交给下一个 loader 以此类推，所以我们自己定义的，所以我们自己定义的 loader 要放置好位置，一个 loader 的功能也是单一的，只需要完成一种转换，后续如果不只是想在类放置装饰器，想在方法里面放置，建议可以再自定义一个新的 loader 去封装。
+```js
+[
+    {
+        loader: 'babel-loader',
+        options: {
+            cacheDirectory: true,
+            sourceType: 'unambiguous',
+            plugins: [
+                '@babel/plugin-proposal-class-properties',
+            ],
+        },
+    },
++   {   loader: path.resolve(__dirname, '../trace/index.js')  }
+]
+```
+这里最适合安放这段 AST 插件的 loader 代码应该是 babel-loader 处理之前这个周期，loader 本质用于对模块的源代码进行转换，这里自定义的 loader 其实相当简单只需要封装一个函数放到 `path.resolve(__dirname, '../trace/index.js')` 目录下即可，用该函数接受源码，然后经过上面的 AST 几个步骤，再把源码返回到 loader 的这个地方交回给 webpack 处理即可。
