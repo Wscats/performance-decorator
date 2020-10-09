@@ -662,3 +662,278 @@ babel 的工作过程经过三个阶段，parse、transform 和 generate，具�
 ```
 
 这里最适合安放这段 AST 插件的 loader 代码应该是 babel-loader 处理之前这个周期，loader 本质用于对模块的源代码进行转换，这里自定义的 loader 其实相当简单只需要封装一个函数放到 `path.resolve(__dirname, '../trace/index.js')` 目录下即可，用该函数接受源码，然后经过上面的 AST 几个步骤，再把源码返回到 loader 的这个地方交回给 webpack 处理即可。
+
+
+# 大型前端项目的断点调试共享化和复用化实践
+
+## 背景
+
+随着我们项目越来越大，我们有可能需要维护很多的模块，我们项目大模块有 10 几个，而每个大模块分别有 N 个小模块，每个大模块下的小模块都有主要的负责人在跟进模块问题。
+
+![enter image description here](src/imgs/1601280334_30_w862_h302.png)
+
+这就会导致一个很大的问题是，模块负责人大部分情况只会关注自己模块的问题，而不甚了解其他负责人手上模块的具体问题。
+
+比如：当我们有用户反馈使用复制粘贴有问题的时候，我们想要快速去定位这个问题，就只能找复制粘贴对应的模块负责人处理，如果复制粘贴模块负责人请假了，那么其他负责人去处理这个问题的时候，解决成本就会非常大，因为其他负责人可能根本对这个模块不熟悉。
+
+![enter image description here](src/imgs/1601279223_25_w876_h439.png)
+
+又比如：我们新来了几个同学，想让他快速去排查用户反馈的问题的时候，我们只能手把手把我们该模块调试的经验传授他，和所熟知的各个坑点告诉他，或者整理好对应的 iwiki 给他看(一般效率低也没人看！)，让他去慢慢定位问题，这样的每个新同学对模块的熟悉，学习和维护的成本就会变得越来越大，项目越大这种情况就会越严重！
+
+![enter image description here](src/imgs/1601279146_68_w874_h454.png)
+
+所以我们思考了很多，该怎么去解决这些问题，至少要让模块维护成本变低，变得更好去维护和定位问题。
+
+## 方案
+
+由于上面的问题真的很痛，我们在爬滚中逐渐摸索了一套方案，我们暂且叫它为基于断点调试的共享化和复用化的实践方案吧，这里有个关键词是断点，相比作为每一个开发者都不陌生，在我们前端，模块定位问题的时候，我们少不了去使用断点去断住一些代码运行关键的地方。下面举一个例子：
+
+```js
+class CopyPaste {
+    // 内部粘贴
+    pasteFromInter(){ ...}
+    // 外部粘贴
+    pasteFromOuter(){ debugger; ...}
+    // 外部图文粘贴
+    isShapePasteFromOuter(){ ... }
+    // 外部图片粘贴
+    isImgPasteFromOuter(){ ... }
+    // 外部文本粘贴
+    isTextFromOuter(){ ... }
+}
+```
+
+上面这段代码是当用户反馈一个复制粘贴问题的时候，熟悉该模块的负责人根据用户的反馈，知道用户是外部粘贴出现了问题，由于他对该模块熟悉，他会快速的在浏览器的控制台打断点，或者手动在源代码注入 `debugger` 关键词去一步一步定位用户的问题，他会先检查内部粘贴 `pasteFromOuter` 是否触发了，然后检查函数 `isShapePasteFromOuter` 是否运行成功，出参和入参是否正确，是否代码走歪了，去了 `isImgPasteFromOuter`。
+
+![enter image description here](src/imgs/1601278321_73_w845_h429.png)
+
+然后在问题排查修复完后，长舒一口气，等遇到下一个问题的时候，再把浏览器或者代码中当前的这些调试的痕迹清理干净，再周而复始的重复上面的一系列动作，我相信大部分的同学每天排查问题甚至做需求都是重复着上面的类似动作，我们是否可以考虑一下把这些**珍贵**的调试痕迹给保存下来，等自己或者其他同学遇到类似模块问题的时候，我们把这些凝聚着我们血与泪的心路历程再自动复现一次？
+
+|代码片段|记录 debugger 位置|
+|-|-|
+|`pasteFromInter`|2行4列|
+|`isShapePasteFromOuter`|256行89列|
+|`isImgPasteFromOuter`|867行12列|
+
+对于大型项目来说，每一个小 Bug 的调试链路的时间成本都是无比巨大的，也是难以复刻和重现的，我们能做的就是当再次遇到相似问题的时候，复用相似的调试经验。有过受伤的痕迹和经历，当问题再次相遇，我们应该会更自信和从容。
+
+所以我们首要任务其实就变成了是保留珍贵的调试链路，也就是保留无数个日夜，那些深扎并刺痛我们内心深处的每个断点。
+
+![enter image description here](src/imgs/1601278983_69_w635_h217.png)
+
+### 插件化
+
+在实践的过程中我们尝试过无数的方法，第一个方案就是基于浏览器插件，实现断点留存，基于谷歌浏览器插件开发提供的接口 `chrome.debugger`，它是 Chrome 远程调试协议的一种消息传输方式。`chrome.debugger` 可以附加到一个或多个标签页调试 JavaScript。并使用调试对象基于 sendCommand 和 onEvent 来做插件通信。它可以让我们在插件去调试页面，很多插件和工具是基于这个协议来跟浏览器的控制台去做通信，这种方案现只能实现一个远程的调试面板，这个面板类似浏览器本身的调试界面可以加载代码然后记录断点，最后可以把这些断点分享出去。
+
+这种方案体验会比较糟糕，首先插件自己实现的调试面板无法像谷歌浏览器那么好的体验，其次是插件需要开发主动去安装，分享的前提是双方都需要安装好对应的插件，开发和推广成本都比较高，所以个人不是很建议，但是这不代表这个方案走不通，因为这个基于插件还可以有另外一种实现，就是下面的 `debug` 函数方案。
+
+### debug 函数
+
+具体是利用**函数断点** `debug(functionName)` 和 `undebug(functionName)` 方法，其中 functionName 是要调试的函数。我们可以将 `debug()` 插入到的代码中（这个方法和 console.log() 语句相似），也可以从 DevTools 控制台中进行调用。 `debug()` 相当于在第一行函数中设置代码行断点。
+
+![enter image description here](src/imgs/1602220500_42_w1596_h632.gif)
+
+一般情况是在控制台中使用，这个方法配合插件会有比较好的体验，因为插件使用 `chrome.devtools.inspectedWindow.eval` 方法配合浏览器的接口可以把代码注入到控制台中执行，从而实现帮你自动下发断点的功能。
+
+```js
+chrome.devtools.inspectedWindow.eval(
+  `debug(window.xxxApi);`,
+  (value) => {
+    callback && callback(value);
+  }
+);
+```
+
+但是细心的同学发现我使用 `debug` 函数监听的是一个全局的函数 window.xxxApi，所以这里也总结一下经验，这个方法的缺陷就是如果你在控制台使用，它会在你的上下文寻找该函数，所以它一般只能用于全局的函数打点，如果需要打点的函数不在上下文，还需要手动断点到目标函数的范围，然后使用函数打点来触发，如果是闭包函数那就毫无办法了，但是瑕不掩瑜，这个方法能帮我们快速定位任何的全局函数，就算代码被混淆了，它还是能快读把函数断点给你加上，所以这个方案我建议可以作为一个备选方案，在某些情况下能发挥奇效！
+
+### AST 注入
+
+经历过上面的各种坑之后，下面我们简单介绍我们实现的一套方案吧：
+
+我们的方案其实是在之前[函数调用链方案](http://km.oa.com/group/46654/articles/show/426505)基础上做的一种改进，既然我们开发可以自己在代码中输入 `debugger` 关键词去断住任何地方的代码，我们何不把这个工作交给工具？
+
+![enter image description here](src/imgs/1601280224_88_w872_h448.png)
+
+首先我们可以用使用状态机去告诉工具我们需要分发的打点的位置在哪里，类似我们常用 whistle 的配置表:
+
+```js
+Module 'CopyPaste'
+    index.ts -f pasteFromInter -s !(()=>{ console.log(window.Worker) })()
+    index.ts -f pasteFromOuter -s console.log('success') -check messagecenter1
+    index.ts -f isShapePasteFromOuter
+End Module
+```
+
+- `Module <-- state --> End Module` 这里描述一个状态，是一个分发断点的行为，用来需要监听那类模块的，例如：复制粘贴模，数据层模块还是数据层模块
+- `-f functionname -s code` 这里可以描述该状态的具体行为特征，例如：在 `pasteFromInter` 函数中分发断点，并注入 `debugger` 代码。
+
+在 webpack 中我们可以在 loader 或者 plugin 这两个过程中去解析这份配置文件，这里你也可以使用第三方库或者正则来解析上面这些状态文本。我是在 loader 中去解析这份状态表的，我在全局目录下或者局部模块内定义一份 `.debug.json` 来写入上述的状态，然后解析出一份 map 对象出来：
+
+```js
+args = argument({
+    "--class": String, // 类
+    "--function": String, // 函数
+    "--code": String, // 函数
+    "-c": "--class", // 转义替换
+    "-f": "--function",
+    "-s": "--code",
+  },{ argv: debugConfigValue, }
+);
+```
+
+如果不想用状态机的方式去写配置文件的话，其实也可以使用一份 `debug.json` 文件来描述断点的位置，这种方式更简单，解析 json 文件的成本比状态机的配置文件低不少，json 文件在这里涉及的主要字段分别是需要检测代码的路径，这个方便工具去定位文件，然后是需要检测的类或者函数的名字，这个方便工具去定位代码的位置，还有检测项的名字和需要检测的代码，和一个关键的键值：
+
+```json
+{
+  "MessageCenter": {
+    "function": [
+      {
+        "path": "src/core/network/message-center/SendMessageCenter.ts",
+        "name": "_sendUserChanges",
+        "title": "数据层断点测试2",
+        "code": "__console.log('数据层断点测试2')",
+        "key": "MessageCenter|function|1"
+      }
+    ]
+  }
+}
+```
+
+这里键值的涉及可以定义的清晰点，比如 `MessageCenter|function|1` 指的是对 MessageCenter 模块的文件里面的某一个函数打点，以后还可以继续改进这样写 `MessageCenter|class|1:12`，意思是 MessageCenter 模块的文件里面某一个类的具体位置打点，如果这个 key 的语义越丰富，后续分发的打点也会更精确，定位问题也会更高效，具体这个可以根据业务场景去定义。
+
+```js
+class CopyPaste {
+    // 内部粘贴
+    pasteFromInter(){
+        debugger
+        ...
+    }
+}
+```
+当我们有了配置文件，我们就得思考怎么无入侵的在代码里面加入调试和检测代码了，我们首选通过 AST 去注入，它可以帮我们把代码关键部分给梳理成一颗树出来，比如抹掉冒号、括号、分号等，能让我们把精力放在重要的节点上，上面的代码经过解析会得到下面这棵 AST 语法树：
+
+```js
+{
+  "program": {
+    "type": "Program",
+    "body": [{
+      "type": "ClassDeclaration",
+      "id": {{ "type": "Identifier", "identifierName": "CopyPaste" }, "name": "CopyPaste" },
+      "body": {
+        "type": "ClassBody",
+        "body": [{
+            "type": "ClassMethod",
+            "key": { "type": "Identifier", "name": "pasteFromInter" },
+            "body": { "type": "BlockStatement", "body": [{ "type": "DebuggerStatement" }]},
+            "leadingComments": [{ "type": "CommentLine", "value": " 内部粘贴" }],
+        }]
+      }
+    }]
+  }
+}
+```
+
+而具体步骤大概如下：解析 `MessageCenter|function|1` 这段参数配置的字符串，得到函数名，模块名，位置信息等，然后对代码进行扫描并进行词法和语法分析，并得到 AST 语法树，根据刚才解析得到的函数名，模块名，位置信息来匹配 AST 树节点，在上面进行加入我们的调试和检测代码，最后再输出经过我们加工的代码。
+
+那上面这个原理我们都懂，具体怎么实现呢，我们可以在 webpack 工具使用 plugins 来实现，在 plugins 中我们经常会用到访问者模式，就是说在访问到某一个路径的时候进行匹配，然后在对这个节点进行修改，比如上面这个 `pasteFromInter` 函数，它是一个 `ClassMethod`，plugins 就会对代码生成的 AST 树进行访问，访问者可以匹配任何对应的词法特性，我们就可以在这里匹配所有的 `ClassMethod` 然后根据路径去拿到节点对应的信息，比如函数名，函数参数和函数位置等，拿到这些关键的信息，我们就可以对这个函数节点进行加工，也就是注入我们的调试和检测代码或者直接注入一个 `debugger` 去打断点。
+
+```js
+plugins = {
+  // 访问器
+  Visitor = {
+      'ClassMethod'(path) {
+        // 检点
+        path.node
+      }
+  }
+}
+```
+
+当然注入检测代码也是需要构造成 `ClassMethod` 的类似结构，所有我们可以配合 `@babel/types` 工具去快速注入一段代码，比如最简单的是注入一个 `debugger`：
+
+```js
+types.expressionStatement(types.identifier(`debugger`))
+```
+
+这样就会在你匹配的路径的特定位置放入一个 `debugger`，而你的代码源文件本身其实是没有任何改动的，只是通过 AST 树配合配置文件成功融合了一段代码到指定的位置，当然实际情况会比预想中的复杂，因为有可能下发的位置不是函数中的某个位置，可能是类函数中的某个位置，闭包函数中的某个位置，所以要兼容各种的语法结构，需要在 AST 中匹配这些函数的所有特征才能准确无误的下发代码，还是以函数作为例子，列出部分需要考虑的情况：
+
+- FunctionExpression 
+
+需要满足到这两种写法，不然 debugger 会下发错位置。
+```js
+this.xxx = function() { debugger }
+const xxx = function() { debugger }
+```
+
+- ClassMethod
+
+这个一般情况按下面的方式就能定位到了，但是如果要更精确比如是私有函数等，那就需要写更精确的访问器了。
+```js
+class xxx { xxx:(){ debugger } }
+```
+
+- FunctionDeclaration
+
+除了要处理上面函数表达式的写法，不要忘了函数还有声明定义的写法，所以这个也得满上。
+```js
+function xxx() { debugger }
+```
+
+- ArrowFunctionExpression
+
+最后还要考虑下箭头函数的写法
+
+```js
+const xxx = () => { debugger }
+this.xxx = () => { debugger }
+class xxx { xxx = () => { debugger } }
+```
+
+虽然大部分情况匹配函数对项目下发的调试代码能覆盖大部分的场景，但总会有漏网之鱼，比如有的同学想在类定义之前注入检测代码，那就需要继续写对应的访问器去获取路径，然后对该位置去分发对应的检测代码，所以需要对各种语法和对应的访问器类型很熟悉才能顺利实现。
+
+经过上面的改造，我们会在最终代码中会得到新代码（已注入了所有检测代码），但是这样会引发一个新的，当我们运行这份新代码，我们上面所有的检测代码都会跑一遍，这样就会断住很多别的模块负责人不想断住的代码区域，所以实际情况我们需要分发一个带开关的检测代码，当然这个开关的涉及其实可以很简单，如下：
+
+```js
+// 基于 AST 在模块中分发的调试开关
+if(require('@tencent/vdebugger').call(this, key)){ debugger }
+// 或者这样，虽然好看点，但这样 debugger 在闭包里面拿不到上下文
+require('@tencent/vdebugger').call(this, key) || (() => { debugger })()
+// 注意这种下面类似这种写法是不行的↓
+require('@tencent/vdebugger') || debugger
+```
+
+我们可以使用 `require('@tencent/vdebugger')` 打包一个函数，这个函数可以设计为在全局变量或者 localstorage 等地方读取配置，然后返回一个布尔值，用于判断是否执行该位置的 `debugger`，这里为了调试方便有几个小细节需要注意，`debugger` 这个关键词自己要独立一个作用域，所以你不能写成类似这个样子 `false || debugger`，还有 `require('@tencent/vdebugger')` 这个函数里面在读取配置之后里面可以包一个 `eval` 方法来执行检测代码，所以可以用 `call` 把当前作用域代理过来，更方便去做调试。
+
+当然实际情况可能还要比想象中复杂，举个简单的例子：因为分发的开关有可能会注入到一些被打包到 worker 的代码里面，worker 在大型项目中运用的很多，但是 worker 里面无法读取 document、window 这些对象，虽然可以使用 navigator，location 和 XMLHttpRequest等对象，但无法通过 localstorage 读取配置等手段去控制调试开关了，所以你需要考虑一下是否需要让调试开关分发到 worker 代码中，如果分发了又要怎么去通信对应的开关等问题。
+
+最简单粗暴就是打包 worker 代码的时候进行过滤。
+```js
+!isWorker && new DebuggerPlugin({
+    debugConfig: path.resolve(dirName, '../debug.json'),
+}),
+```
+
+当然如果需要分发的开关在 worker 中生效，就需要去实现一个读取开关配置的通信手段，最常见的就是基于 postMessage 的通信手段，让 `require('@tencent/vdebugger')` 函数，即开关模块接受主线程的配置去向 worker 的运行代码下达是否执行检测代码和启动断点的命令。
+
+```js
+myWorker.postMessage(xx);
+myWorker.onmessage = () => {
+  console.log('Message received from worker');
+}
+```
+
+## 思考
+
+实现了上面的基本功能之后，我们还可以继续优化很多体验，比如我们还可以使用 webpack 的 plugin 来实现本地编译时候的增量更新，这就能做到当我们更改本地配置文件的时候，自动分发断点和调试代码，逻辑也是比较简单的，在 plugin 的 apply 周期使用内置的库 `chokidar` 去监听配置文件的变更，然后触发编译，重新走 AST 去编译生成带调试代码合断点的代码：
+
+```js
+const chokidar = require('chokidar');
+this.watcher = chokidar.watch(["../src/**/.debug.json"], {
+  usePolling: true,
+  ignored: this.options.ignored
+});
+```
+
+## 总结
+
+关于这方面的调试相关文章不多，一路走来跳了不少的坑，感谢团队成员的支持，并让这个方案最终成功落地，也希望有更多志同道合的人加入我们团队，一起去探索和遨游，最后也希望这篇文章能给到你们一些启发吧😁
